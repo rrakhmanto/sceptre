@@ -19,6 +19,7 @@ from .exceptions import StackDoesNotExistError
 
 from .helpers import recurse_into_sub_stack_groups, _detect_cycles
 from .stack_status import StackStatus
+from .config.graph import StackDependencyGraph
 
 
 class StackGroup(object):
@@ -36,8 +37,8 @@ class StackGroup(object):
     done using the ``sceptre.helpers.recurse_into_sub_stack_groups``
     decorator.
 
-    :param stack_group_path: The name of the stack_group.
-    :type stack_group_path: str
+    :param path: The name of the stack_group.
+    :type path: str
     :param options: A dict of key-value pairs to update self.config with.
     :type debug: dict
     """
@@ -66,9 +67,8 @@ class StackGroup(object):
         self.logger.debug("Launching stack_group '%s'", self.path)
         threading_events = self._get_threading_events()
         stack_statuses = self._get_initial_statuses()
-        launch_dependencies = self._get_launch_dependencies(self.path)
+        launch_dependencies = self._get_launch_dependencies()
 
-        self._check_for_circular_dependencies()
         self._build(
             "launch", threading_events, stack_statuses, launch_dependencies
         )
@@ -86,7 +86,6 @@ class StackGroup(object):
         stack_statuses = self._get_initial_statuses()
         delete_dependencies = self._get_delete_dependencies()
 
-        self._check_for_circular_dependencies()
         self._build(
             "delete", threading_events, stack_statuses, delete_dependencies
         )
@@ -183,6 +182,8 @@ class StackGroup(object):
         "delete".
         :type command: str
         """
+        import ipdb
+        ipdb.set_trace()
         for dependency in dependencies[stack.name]:
             threading_events[dependency].wait()
             if stack_statuses[dependency] != StackStatus.COMPLETE:
@@ -234,7 +235,7 @@ class StackGroup(object):
         }
 
     @recurse_into_sub_stack_groups
-    def _get_launch_dependencies(self, top_level_stack_group_path):
+    def _get_launch_dependencies(self):
         """
         Returns a dict of each stack's launch dependencies.
 
@@ -247,16 +248,7 @@ class StackGroup(object):
             for stack in self.stacks
         }
 
-        # Filter out dependencies which aren't under the top level stack group
-        launch_dependencies = {
-            stack_name: [
-                dependency
-                for dependency in dependencies
-                if dependency.startswith(top_level_stack_group_path)
-            ]
-            for stack_name, dependencies in all_dependencies.items()
-        }
-        return launch_dependencies
+        return StackDependencyGraph(all_dependencies)
 
     def _get_delete_dependencies(self):
         """
@@ -266,35 +258,4 @@ class StackGroup(object):
             while deleting, keyed by that stack's name.
         :rtype: dict
         """
-        launch_dependencies = self._get_launch_dependencies(self.path)
-        delete_dependencies = {
-            stack_name: [] for stack_name in launch_dependencies
-        }
-        for stack_name, dependencies in launch_dependencies.items():
-            for dependency in dependencies:
-                delete_dependencies[dependency].append(stack_name)
-        return delete_dependencies
-
-    def _check_for_circular_dependencies(self):
-        """
-        Checks to make sure that no stacks are dependent on stacks which are
-        dependent on the first stack.
-
-        :raises: sceptre.workplan.CircularDependenciesException
-        """
-        self.logger.debug("Checking for circular dependencies...")
-
-        if self.stacks:
-            encountered_stacks = {}
-            available_nodes = {stack.name: stack for stack in self.stacks}
-            for stack in self.stacks:
-                if encountered_stacks.get(stack, "UNENCOUNTERED") != "DONE":
-                    encountered_stacks[stack] = "ENCOUNTERED"
-                    encountered_stacks = _detect_cycles(
-                        stack,
-                        encountered_stacks,
-                        available_nodes,
-                        [stack.name]
-                    )
-                    encountered_stacks[stack] = "DONE"
-        self.logger.debug("No circular dependencies found")
+        return self._get_launch_dependencies().reverse_graph()
